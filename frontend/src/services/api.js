@@ -7,7 +7,7 @@ const API_BASE_URL = 'http://localhost:8000/api'
 async function request(endpoint, options = {}) {
   const token = localStorage.getItem('token')
   const headers = {
-    'Content-Type': 'application/json',
+    ...(options.isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
   }
@@ -51,8 +51,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ ticker, year: parseInt(year, 10), filing_type }),
       }),
+    uploadPdf: (formData) =>
+      request('/audit/upload-pdf', {
+        method: 'POST',
+        body: formData,
+        isFormData: true,
+      }),
     get: (id) => request(`/audit/${id}`),
     getSample: () => request('/audit/sample'),
+    getLogs: (id) => request(`/audit/${id}/logs`),
+    getXbrlReconciliation: (id) => request(`/audit/${id}/xbrl-reconciliation`),
     submitReview: (id, payload) =>
       request(`/audit/${id}/review`, {
         method: 'POST',

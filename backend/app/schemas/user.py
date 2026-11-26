@@ -3,7 +3,7 @@ User schemas defining request and response contracts for authentication and user
 """
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class UserBase(BaseModel):
@@ -22,11 +22,10 @@ class UserLogin(BaseModel):
 
 
 class UserResponse(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     created_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 
 class Token(BaseModel):
@@ -36,4 +35,3 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
-

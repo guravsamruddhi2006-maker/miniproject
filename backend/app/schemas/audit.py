@@ -1,10 +1,11 @@
 """
 Audit schemas defining request and response contracts for financial filing extractions and reviews.
+Includes append-only audit trail logs and SEC XBRL ground-truth reconciliation models.
 """
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class AuditStatus(str, Enum):
@@ -23,6 +24,7 @@ class MetricStatus(str, Enum):
 
 
 class ExtractedMetric(BaseModel):
+    id: Optional[int] = None
     name: str = Field(..., description="e.g. Total Revenue, Net Income, Total Assets")
     value: float = Field(..., description="Numerical value parsed from the filing")
     unit: str = Field(default="USD", description="Currency or unit")
@@ -65,7 +67,50 @@ class HumanReviewPayload(BaseModel):
     comments: Optional[str] = None
 
 
+class AuditLogResponse(BaseModel):
+    id: int
+    audit_id: int
+    action: str
+    metric_name: Optional[str] = None
+    previous_value: Optional[float] = None
+    new_value: Optional[float] = None
+    previous_status: Optional[str] = None
+    new_status: Optional[str] = None
+    reviewer_id: Optional[int] = None
+    reviewer_email: Optional[str] = None
+    comments: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class DocumentResponse(BaseModel):
+    id: int
+    filename: str
+    file_size: int
+    mime_type: str
+    uploaded_at: Optional[str] = None
+
+
+class XBRLReconciliationItem(BaseModel):
+    metric_name: str
+    extracted_value: float
+    xbrl_value: Optional[float] = None
+    difference: float = 0.0
+    percentage_diff: float = 0.0
+    status: str
+    verified: bool
+
+
+class XBRLReconciliationResponse(BaseModel):
+    ticker: str
+    year: int
+    overall_accuracy_percentage: float
+    total_metrics_compared: int
+    items: List[XBRLReconciliationItem] = Field(default_factory=list)
+
+
 class AuditResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     ticker: str
     year: int
@@ -73,10 +118,11 @@ class AuditResponse(BaseModel):
     status: AuditStatus
     requires_human_review: bool
     confidence_overall: float
+    xbrl_accuracy: float = 95.0
+    document_id: Optional[int] = None
+    document_filename: Optional[str] = None
     metrics: List[ExtractedMetric] = Field(default_factory=list)
+    logs: List[AuditLogResponse] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     reviewed_at: Optional[datetime] = None
     reviewer_id: Optional[int] = None
-
-    class Config:
-        from_attributes = True

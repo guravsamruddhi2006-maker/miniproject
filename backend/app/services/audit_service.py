@@ -1,14 +1,24 @@
 """
-Audit Service: Autonomous Financial Extraction and Rule-Based Validation Engine.
-Applies accounting identities, confidence scoring thresholds, and YoY anomaly detection.
+Audit Service: Autonomous Financial Extraction, Rule-Based Validation, and Ground-Truth XBRL Engine.
+Applies accounting identities, confidence scoring thresholds, YoY anomaly detection,
+and cross-references SEC EDGAR XBRL facts.
 """
-from typing import List, Tuple, Dict, Any
-from app.database import AuditRepository
+import os
+import shutil
+from typing import List, Tuple, Dict, Any, Optional
+from app.database import AuditRepository, DocumentRepository
 from app.models.audit import FilingAudit
 from app.schemas.audit import AuditStatus, MetricStatus
 from app.services.mock_data import FILING_FIXTURES
+from app.services.document_parser import (
+    validate_pdf_file,
+    extract_metrics_from_document,
+)
+from app.services.xbrl_service import reconcile_metrics_with_xbrl
 
 CONFIDENCE_THRESHOLD = 0.85
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def run_validation_checks(metrics: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool, float]:
@@ -68,18 +78,26 @@ def run_validation_checks(metrics: List[Dict[str, Any]]) -> Tuple[List[Dict[str,
     return validated_metrics, requires_human_review, avg_confidence
 
 
-def execute_audit(user_id: int, ticker: str, year: int, filing_type: str = "10-K") -> FilingAudit:
+def execute_audit(
+    user_id: int,
+    ticker: str,
+    year: int,
+    filing_type: str = "10-K",
+    custom_metrics: Optional[List[Dict[str, Any]]] = None,
+    document_id: Optional[int] = None,
+) -> FilingAudit:
     """
-    Executes financial filing extraction, runs validation engine, and persists to SQLite.
+    Executes financial filing extraction, runs validation engine, compares with XBRL ground truth, and persists to SQLite.
     """
     ticker_clean = ticker.upper().strip()
     year_str = str(year)
 
-    # Fetch from fixtures if present, or generate realistic fallback metrics
-    if ticker_clean in FILING_FIXTURES and year_str in FILING_FIXTURES[ticker_clean]:
+    if custom_metrics:
+        raw_metrics = custom_metrics
+    elif ticker_clean in FILING_FIXTURES and year_str in FILING_FIXTURES[ticker_clean]:
         raw_metrics = FILING_FIXTURES[ticker_clean][year_str]
     else:
-        # Generic fallback for any company
+        # Fallback realistic dataset
         raw_metrics = [
             {"name": "Total Revenue", "value": 50000000000.0, "unit": "USD", "confidence_score": 0.94, "source_snippet": f"Consolidated revenues for {ticker_clean} in {year}."},
             {"name": "Net Income", "value": 8500000000.0, "unit": "USD", "confidence_score": 0.70, "source_snippet": f"Net income reported for {year}."},
@@ -91,12 +109,16 @@ def execute_audit(user_id: int, ticker: str, year: int, filing_type: str = "10-K
             {"name": "Diluted EPS", "value": 3.45, "unit": "USD", "confidence_score": 0.98, "source_snippet": "Diluted earnings per common share."},
         ]
 
-    # Run validation rules
+    # 1. Run validation engine
     validated_metrics, requires_review, confidence_overall = run_validation_checks(raw_metrics)
+
+    # 2. Reconcile against SEC EDGAR XBRL ground-truth facts
+    xbrl_report = reconcile_metrics_with_xbrl(validated_metrics, ticker_clean, year)
+    xbrl_acc = xbrl_report["overall_accuracy_percentage"]
 
     status = AuditStatus.PENDING_REVIEW.value if requires_review else AuditStatus.APPROVED.value
 
-    # Persist to database
+    # 3. Persist to SQLite
     audit = AuditRepository.create_audit(
         user_id=user_id,
         ticker=ticker_clean,
@@ -106,6 +128,55 @@ def execute_audit(user_id: int, ticker: str, year: int, filing_type: str = "10-K
         requires_human_review=requires_review,
         confidence_overall=confidence_overall,
         metrics=validated_metrics,
+        document_id=document_id,
+        xbrl_accuracy=xbrl_acc,
+    )
+
+    return audit
+
+
+def process_pdf_document_audit(
+    user_id: int,
+    file_bytes: bytes,
+    filename: str,
+    ticker: str,
+    year: int,
+    filing_type: str = "10-K",
+) -> FilingAudit:
+    """
+    Validates uploaded PDF, parses document tables & text, runs validations & XBRL reconciliation,
+    and returns the fully registered audit.
+    """
+    # 1. Validate PDF file
+    valid, err_msg = validate_pdf_file(file_bytes, filename)
+    if not valid:
+        raise ValueError(err_msg)
+
+    # 2. Store file securely on disk
+    safe_filename = f"{ticker.upper()}_{year}_{filename.replace(' ', '_')}"
+    saved_path = os.path.join(UPLOAD_DIR, safe_filename)
+    with open(saved_path, "wb") as f:
+        f.write(file_bytes)
+
+    # 3. Create document record in database
+    doc = DocumentRepository.create_document(
+        filename=filename,
+        file_path=saved_path,
+        file_size=len(file_bytes),
+        mime_type="application/pdf",
+    )
+
+    # 4. Extract metrics from PDF using parser
+    extracted_metrics = extract_metrics_from_document(saved_path)
+
+    # 5. Execute audit with extracted document metrics
+    audit = execute_audit(
+        user_id=user_id,
+        ticker=ticker,
+        year=year,
+        filing_type=filing_type,
+        custom_metrics=extracted_metrics,
+        document_id=doc.id,
     )
 
     return audit

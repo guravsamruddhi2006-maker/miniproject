@@ -1,6 +1,19 @@
 import React, { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { Check, XCircle, ShieldAlert, CheckCircle2, RotateCcw, Loader2, ArrowLeft, AlertCircle } from 'lucide-react'
+import {
+  Check,
+  XCircle,
+  ShieldAlert,
+  CheckCircle2,
+  RotateCcw,
+  Loader2,
+  ArrowLeft,
+  AlertCircle,
+  FileText,
+  History,
+  Scale,
+  Award,
+} from 'lucide-react'
 import { api } from '../services/api'
 import MetricCard from '../components/audit/MetricCard'
 import ReviewModal from '../components/audit/ReviewModal'
@@ -12,8 +25,12 @@ export default function AuditReviewPage() {
 
   const [audit, setAudit] = useState(null)
   const [metrics, setMetrics] = useState([])
+  const [logs, setLogs] = useState([])
+  const [xbrlReport, setXbrlReport] = useState(null)
+  const [viewTab, setViewTab] = useState('metrics') // 'metrics' | 'xbrl' | 'logs'
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [reviewerComments, setReviewerComments] = useState('')
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
 
@@ -21,7 +38,7 @@ export default function AuditReviewPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
 
   useEffect(() => {
-    async function fetchAudit() {
+    async function fetchAuditData() {
       setLoading(true)
       setError('')
       try {
@@ -33,13 +50,22 @@ export default function AuditReviewPage() {
         }
         setAudit(data)
         setMetrics(data.metrics || [])
+        setLogs(data.logs || [])
+
+        // Fetch XBRL Reconciliation report
+        try {
+          const xbrl = await api.audit.getXbrlReconciliation(data.id)
+          setXbrlReport(xbrl)
+        } catch (e) {
+          console.warn('XBRL report fetch error:', e)
+        }
       } catch (err) {
         setError(err.message || 'Failed to fetch audit data.')
       } finally {
         setLoading(false)
       }
     }
-    fetchAudit()
+    fetchAuditData()
   }, [auditId])
 
   const handleEditClick = (metric) => {
@@ -62,19 +88,20 @@ export default function AuditReviewPage() {
         metric_name: m.name,
         decision: m.status === 'MANUALLY_EDITED' ? 'EDIT' : 'APPROVE',
         corrected_value: m.value,
-        reviewer_notes: m.validation_notes || 'Approved by human reviewer',
+        reviewer_notes: m.validation_notes || 'Verified by human reviewer',
       }))
 
       const payload = {
         overall_decision: 'APPROVE',
         metric_updates: updates,
-        comments: 'All 8 metrics validated and confirmed against filing.',
+        comments: reviewerComments || 'All metrics confirmed and reconciled against filing.',
       }
 
       const updated = await api.audit.submitReview(audit.id, payload)
       setAudit(updated)
       setMetrics(updated.metrics || [])
-      setSuccessMsg('Audit approved successfully! Changes saved to the permanent audit trail.')
+      setLogs(updated.logs || [])
+      setSuccessMsg('Audit approved successfully! Changes recorded in the append-only audit log.')
     } catch (err) {
       setError(err.message || 'Failed to submit review.')
     } finally {
@@ -90,12 +117,13 @@ export default function AuditReviewPage() {
       const payload = {
         overall_decision: 'REJECT',
         metric_updates: [],
-        comments: 'Filing rejected due to unresolvable accounting inconsistencies.',
+        comments: reviewerComments || 'Filing rejected due to discrepancies.',
       }
       const updated = await api.audit.submitReview(audit.id, payload)
       setAudit(updated)
       setMetrics(updated.metrics || [])
-      setSuccessMsg('Filing has been marked as REJECTED.')
+      setLogs(updated.logs || [])
+      setSuccessMsg('Filing has been marked as REJECTED in the audit trail.')
     } catch (err) {
       setError(err.message || 'Failed to reject filing.')
     } finally {
@@ -139,7 +167,7 @@ export default function AuditReviewPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-3 flex-wrap gap-y-1">
             <h1 className="text-2xl font-bold text-slate-900">
               Audit Review: {audit?.ticker} ({audit?.year} {audit?.filing_type})
             </h1>
@@ -160,9 +188,28 @@ export default function AuditReviewPage() {
               </span>
             )}
           </div>
-          <p className="text-sm text-slate-500 mt-1">
-            Audit ID #{audit?.id} • Overall Confidence: {(audit?.confidence_overall * 100).toFixed(0)}% • Human-in-the-Loop Console
-          </p>
+          <div className="flex items-center space-x-3 text-xs text-slate-500 mt-1 flex-wrap">
+            <span>Audit #{audit?.id}</span>
+            <span>•</span>
+            <span className="flex items-center space-x-1">
+              <Scale className="w-3.5 h-3.5 text-brand-600" />
+              <span>AI Confidence: {(audit?.confidence_overall * 100).toFixed(0)}%</span>
+            </span>
+            <span>•</span>
+            <span className="flex items-center space-x-1 text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+              <Award className="w-3.5 h-3.5 text-emerald-600" />
+              <span>XBRL Ground-Truth Match: {audit?.xbrl_accuracy}%</span>
+            </span>
+            {audit?.document_filename && (
+              <>
+                <span>•</span>
+                <span className="flex items-center space-x-1 text-slate-600 font-medium">
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Document: {audit.document_filename}</span>
+                </span>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center space-x-3">
@@ -190,7 +237,7 @@ export default function AuditReviewPage() {
               onClick={() => navigate('/history')}
               className="inline-flex items-center space-x-1.5 px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium text-slate-700 bg-white hover:bg-slate-50"
             >
-              <span>View Audit History</span>
+              <span>Back to History</span>
             </button>
           )}
         </div>
@@ -207,23 +254,184 @@ export default function AuditReviewPage() {
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start space-x-3 text-amber-900 shadow-xs">
           <ShieldAlert className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
           <div className="text-sm">
-            <p className="font-bold">Human Intervention Checkpoint Triggered</p>
+            <p className="font-bold">Human Review Checkpoint Active</p>
             <p className="text-amber-800 mt-0.5">
-              {flaggedCount} metric(s) have confidence scores below 85% or triggered an accounting equation variance. Click <strong>Modify</strong> to inspect filing snippets and correct values.
+              {flaggedCount} metric(s) have confidence scores below 85% or triggered an accounting equation variance. Click <strong>Modify</strong> to inspect the filing snippet and adjust values before approving.
             </p>
           </div>
         </div>
       )}
 
-      <div className="space-y-3">
-        {metrics.map((metric, idx) => (
-          <MetricCard
-            key={idx}
-            metric={metric}
-            onEdit={handleEditClick}
-          />
-        ))}
+      {/* Navigation sub-tabs */}
+      <div className="flex border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => setViewTab('metrics')}
+          className={`pb-2.5 px-4 font-semibold text-sm border-b-2 transition-colors ${
+            viewTab === 'metrics'
+              ? 'border-brand-600 text-brand-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          Extracted Financial Metrics ({metrics.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewTab('xbrl')}
+          className={`pb-2.5 px-4 font-semibold text-sm border-b-2 transition-colors flex items-center space-x-1.5 ${
+            viewTab === 'xbrl'
+              ? 'border-brand-600 text-brand-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Award className="w-4 h-4" />
+          <span>SEC XBRL Reconciliation</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewTab('logs')}
+          className={`pb-2.5 px-4 font-semibold text-sm border-b-2 transition-colors flex items-center space-x-1.5 ${
+            viewTab === 'logs'
+              ? 'border-brand-600 text-brand-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <History className="w-4 h-4" />
+          <span>Append-Only Audit Trail ({logs.length})</span>
+        </button>
       </div>
+
+      {viewTab === 'metrics' && (
+        <div className="space-y-4">
+          <div className="space-y-3">
+            {metrics.map((metric, idx) => (
+              <MetricCard
+                key={idx}
+                metric={metric}
+                onEdit={handleEditClick}
+              />
+            ))}
+          </div>
+
+          {!isApproved && !isRejected && (
+            <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                Auditor Decision Notes (Will be permanently logged)
+              </label>
+              <textarea
+                rows={2}
+                value={reviewerComments}
+                onChange={(e) => setReviewerComments(e.target.value)}
+                placeholder="Enter sign-off comments or explanation for modifications..."
+                className="w-full border border-slate-300 rounded-lg p-2.5 text-sm text-slate-900 focus:ring-brand-500 focus:border-brand-500"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewTab === 'xbrl' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider">
+                SEC EDGAR XBRL Ground-Truth Comparison
+              </h3>
+              <p className="text-xs text-slate-500">
+                Official XBRL facts pulled from SEC Form 10-K company facts API
+              </p>
+            </div>
+            <span className="text-sm font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+              Overall Accuracy: {xbrlReport?.overall_accuracy_percentage || audit?.xbrl_accuracy}%
+            </span>
+          </div>
+
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <thead className="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider text-left">
+              <tr>
+                <th className="px-6 py-3.5">Financial Metric</th>
+                <th className="px-6 py-3.5">Extracted Value</th>
+                <th className="px-6 py-3.5">SEC XBRL Fact</th>
+                <th className="px-6 py-3.5">Variance</th>
+                <th className="px-6 py-3.5">Reconciliation Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 bg-white font-mono text-xs">
+              {xbrlReport?.items?.map((item, idx) => (
+                <tr key={idx} className="hover:bg-slate-50">
+                  <td className="px-6 py-3.5 font-sans font-semibold text-slate-900">{item.metric_name}</td>
+                  <td className="px-6 py-3.5 text-slate-800 font-bold">
+                    ${(item.extracted_value / 1e9).toFixed(2)}B
+                  </td>
+                  <td className="px-6 py-3.5 text-slate-600">
+                    {item.xbrl_value ? `$${(item.xbrl_value / 1e9).toFixed(2)}B` : 'N/A'}
+                  </td>
+                  <td className="px-6 py-3.5 text-slate-500 font-sans">
+                    {item.percentage_diff.toFixed(2)}%
+                  </td>
+                  <td className="px-6 py-3.5 font-sans">
+                    {item.verified ? (
+                      <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-xs font-semibold border border-emerald-200">
+                        {item.status}
+                      </span>
+                    ) : (
+                      <span className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded text-xs font-semibold border border-amber-200">
+                        {item.status}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {viewTab === 'logs' && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+            <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider">
+              Immutable Append-Only Audit Trail
+            </h3>
+            <p className="text-xs text-slate-500">
+              Permanent chronological record of automated ingestion, checkpoint triggers, and human decisions
+            </p>
+          </div>
+
+          <div className="divide-y divide-slate-200">
+            {logs.map((log) => (
+              <div key={log.id} className="p-4 sm:p-5 hover:bg-slate-50/50 transition-colors">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="space-y-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-xs font-bold bg-slate-100 text-slate-800 px-2 py-0.5 rounded border border-slate-200">
+                        {log.action}
+                      </span>
+                      {log.metric_name && (
+                        <span className="text-xs font-semibold text-slate-700">
+                          {log.metric_name}
+                        </span>
+                      )}
+                      {log.previous_value !== null && log.new_value !== null && (
+                        <span className="text-xs font-mono text-slate-500">
+                          (${log.previous_value?.toLocaleString()} → ${log.new_value?.toLocaleString()})
+                        </span>
+                      )}
+                    </div>
+                    {log.comments && (
+                      <p className="text-xs text-slate-600 italic">"{log.comments}"</p>
+                    )}
+                  </div>
+                  <div className="text-right text-xs text-slate-400">
+                    <div>{log.reviewer_email || 'system@agent'}</div>
+                    <div>{log.created_at ? new Date(log.created_at).toLocaleString() : ''}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <ReviewModal
         isOpen={isModalOpen}
